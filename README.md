@@ -237,16 +237,20 @@ SQL.
 Working: cursor *and* page-number pagination, Vault-backed auth, LIMIT and equality
 pushdown, usage/cost flattening with fallbacks, field-group selection.
 
-Verified against a live Langfuse Cloud (JP) project: auth, both seed paths, and the
-response shape of `traces` and `observations` — including that the flattening and column
-mapping line up with what the API actually returns.
+End-to-end verified on Supabase against a live Langfuse Cloud (JP) project: the component
+loads, authenticates out of Vault, and returns rows that aggregate correctly.
+
+`sum(total_cost)` over `traces` and over `observations` agree at `0.15584` for the same
+seeded data, despite reaching the value through different response fields
+(`totalCost` vs `calculatedTotalCost`) — which is what makes the fallback chains worth
+having. `where user_id = ...` pushed down and returned a count matching the per-user
+aggregate.
+
+Note that `double precision` columns show float artifacts (`0.000779999999`). Declare cost
+columns as `numeric` if you need exact decimal output.
 
 Not done yet:
 
-- **Not yet run inside Postgres.** The component builds and the request shapes are
-  confirmed by curl against the live API, but the wrapper has not been loaded into a
-  Postgres instance. That needs either a Supabase project (paste `scripts/install.sql`
-  into the SQL Editor) or a local `supabase start`, which needs Docker.
 - **Timestamp pushdown.** `fromStartTime`/`toStartTime` would make time-windowed queries
   much cheaper; currently a `where start_time > ...` scans all pages.
 - **`user_id` on observations.** Accepted as a filter, absent from the response. Join
