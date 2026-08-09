@@ -15,7 +15,7 @@ select u.plan,
        sum(t.total_cost)   as cost_usd
 from public.users u
 join langfuse.traces t on t.user_id = u.id::text
-where t.timestamp > now() - interval '30 days'
+where t.timestamp >= now() - interval '30 days'
 group by u.plan
 order by cost_usd desc;
 ```
@@ -58,10 +58,10 @@ Then create the server, passing the secret UUIDs returned above:
 create server langfuse_server
   foreign data wrapper wasm_wrapper
   options (
-    fdw_package_url 'https://github.com/distanceqo/langfuse-wasm-fdw/releases/download/v0.1.0/langfuse_fdw.wasm',
+    fdw_package_url 'https://github.com/distanceqo/langfuse-wasm-fdw/releases/download/v0.2.0/langfuse_fdw.wasm',
     fdw_package_name 'distanceqo:langfuse-fdw',
-    fdw_package_version '0.1.0',
-    fdw_package_checksum '4f8f798ff26c0b0bc2955c67d84ae5d0c2525c181f6f18c75bac5fb4fa8fe418',
+    fdw_package_version '0.2.0',
+    fdw_package_checksum 'dab63e365a684f4033322b66868b89ed3c21494973ff67836b223643bb9a7803',
     -- must match the region the project was created in; keys are region-bound
     api_url 'https://jp.cloud.langfuse.com',
     public_key_id '<public key secret UUID>',

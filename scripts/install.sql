@@ -36,10 +36,10 @@ select vault.create_secret('<sk-lf-...>', 'langfuse_secret_key');
 create server langfuse_server
   foreign data wrapper wasm_wrapper
   options (
-    fdw_package_url 'https://github.com/distanceqo/langfuse-wasm-fdw/releases/download/v0.1.0/langfuse_fdw.wasm',
+    fdw_package_url 'https://github.com/distanceqo/langfuse-wasm-fdw/releases/download/v0.2.0/langfuse_fdw.wasm',
     fdw_package_name 'distanceqo:langfuse-fdw',
-    fdw_package_version '0.1.0',
-    fdw_package_checksum '4f8f798ff26c0b0bc2955c67d84ae5d0c2525c181f6f18c75bac5fb4fa8fe418',
+    fdw_package_version '0.2.0',
+    fdw_package_checksum 'dab63e365a684f4033322b66868b89ed3c21494973ff67836b223643bb9a7803',
     -- jp / us / eu — must match the region the project was created in, keys are
     -- region-bound and will 401 elsewhere
     api_url 'https://jp.cloud.langfuse.com',
@@ -139,3 +139,15 @@ order by cost_usd desc;
 -- Verifies equality pushdown: this should hit the API with ?userId=user-alice
 -- rather than fetching every page and filtering locally.
 select count(*) from langfuse.traces where user_id = 'user-alice';
+
+-- Verifies time pushdown. Add `verbose 'true'` to the server options and this logs the
+-- request URL as INFO, which should carry fromTimestamp and toTimestamp. Note `>=` and
+-- `<`: those are the operators that push down.
+select date_trunc('hour', timestamp) as hour,
+       count(*)        as traces,
+       sum(total_cost) as cost_usd
+from langfuse.traces
+where timestamp >= now() - interval '24 hours'
+  and timestamp <  now()
+group by hour
+order by hour desc;
