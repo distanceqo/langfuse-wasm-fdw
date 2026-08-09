@@ -140,14 +140,21 @@ order by cost_usd desc;
 -- rather than fetching every page and filtering locally.
 select count(*) from langfuse.traces where user_id = 'user-alice';
 
--- Verifies time pushdown. Add `verbose 'true'` to the server options and this logs the
--- request URL as INFO, which should carry fromTimestamp and toTimestamp. Note `>=` and
--- `<`: those are the operators that push down.
+-- Verifies time pushdown. Note the literal timestamps and the `>=` / `<` operators:
+-- `now()` is not handed to the wrapper, and `>` / `<=` are not pushed. Adjust the dates
+-- to a window your data actually falls in.
 select date_trunc('hour', timestamp) as hour,
        count(*)        as traces,
        sum(total_cost) as cost_usd
 from langfuse.traces
-where timestamp >= now() - interval '24 hours'
-  and timestamp <  now()
+where timestamp >= '2026-08-09 00:00:00'::timestamp
+  and timestamp <  '2026-08-09 03:00:00'::timestamp
 group by hour
 order by hour desc;
+
+-- Confirm the filter reached the wrapper rather than being applied locally: the
+-- `Wrappers: quals` line should list the timestamp quals, not be empty.
+explain (verbose)
+select * from langfuse.traces
+where timestamp >= '2026-08-09 00:00:00'::timestamp
+  and timestamp <  '2026-08-09 03:00:00'::timestamp;

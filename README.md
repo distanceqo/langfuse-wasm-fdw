@@ -197,11 +197,24 @@ request regardless of project size. Pages are fetched lazily as the scan consume
 Time bounds are pushed down as well, which is what makes time-windowed queries cheap:
 
 ```sql
--- reaches the API as ?fromTimestamp=2026-08-02T...&toTimestamp=2026-08-09T...
+-- reaches the API as ?fromTimestamp=2026-08-02T00:00:00Z&toTimestamp=2026-08-09T00:00:00Z
 select * from langfuse.traces
-where timestamp >= now() - interval '7 days'
-  and timestamp < now();
+where timestamp >= '2026-08-02'::timestamp
+  and timestamp <  '2026-08-09'::timestamp;
 ```
+
+**Use literal timestamps, not `now()`.** Postgres only hands the wrapper quals it can
+evaluate up front, so `where timestamp >= now() - interval '7 days'` arrives as an empty
+qual list and is filtered locally after every page has been fetched. Confirm with
+`explain (verbose)` and read the `Wrappers: quals` line:
+
+```
+-- with now():      Wrappers: quals = []
+-- with a literal:  Wrappers: quals = [Qual { field: "timestamp", operator: ">=", ... }]
+```
+
+Compute the window in your application, or inline it as a literal. (`Filter:` still lists
+the condition either way — Postgres always re-checks pushed-down quals.)
 
 The column and the parameters differ per endpoint, and the wrapper picks the right pair:
 `observations` filters `start_time` via `fromStartTime`/`toStartTime`, everything else
@@ -212,12 +225,16 @@ Only `>=` and `<` are pushed, matching the API's inclusive-from / exclusive-to s
 the query still works, it just fetches more pages. Everything else is filtered locally
 too; Postgres re-checks every pushed-down qual regardless, so a coarse pushdown is safe.
 
-To see what actually reached the API, set `verbose 'true'` on the server and read the
-`INFO` lines:
+To see what actually reached the API, set `verbose 'true'` on the server:
 
 ```
 langfuse_fdw: GET https://jp.cloud.langfuse.com/api/public/traces?limit=100&fromTimestamp=...
 ```
+
+Note that the Supabase dashboard SQL Editor does not surface `INFO` messages, so these
+lines only appear over a real Postgres connection (`psql`, or any client that forwards
+server notices). From the dashboard, use `explain (verbose)` and read `Wrappers: quals`
+instead.
 
 ## Seeding test data
 
@@ -274,6 +291,8 @@ columns as `numeric` if you need exact decimal output.
 
 Not done yet:
 
+- **`now()` in a time filter.** Not pushed down — Postgres does not put it in the qual
+  list. Inline a literal timestamp instead; see Pushdown above.
 - **`>` and `<=` time bounds.** Not pushed down, since the API's bounds are
   inclusive-from / exclusive-to and shifting by an epsilon risks dropping rows. Use `>=`
   and `<` to get the cheap path.
