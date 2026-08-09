@@ -1,4 +1,4 @@
-package distanceqo:langfuse-fdw@0.1.0;
+package distanceqo:langfuse-fdw@0.2.0;
 
 world langfuse {
     import supabase:wrappers/http@0.1.0;

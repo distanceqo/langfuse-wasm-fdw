@@ -35,6 +35,8 @@ struct LangfuseFdw {
     // rows still to return; None means unlimited
     remaining: Option<i64>,
     page_size: i64,
+    // log each outgoing request URL
+    verbose: bool,
 }
 
 static mut INSTANCE: *mut LangfuseFdw = std::ptr::null_mut::<LangfuseFdw>();
@@ -51,9 +53,10 @@ impl LangfuseFdw {
         unsafe { &mut (*INSTANCE) }
     }
 
-    // Only equality on the handful of columns Langfuse accepts as query params is
-    // pushed down; everything else is left for Postgres to filter locally.
-    fn pushdown_quals(ctx: &Context) -> String {
+    // Only filters Langfuse accepts as query params are pushed down; everything else is
+    // left for Postgres to re-check locally. Postgres re-checks all of them anyway, so a
+    // pushdown that is merely coarse is still safe.
+    fn pushdown_quals(&self, ctx: &Context) -> String {
         const PUSHABLE: [&str; 6] = [
             "trace_id",
             "user_id",
@@ -63,17 +66,55 @@ impl LangfuseFdw {
             "name",
         ];
 
+        // The time column and its query params differ per endpoint: observations filter
+        // on start_time via fromStartTime/toStartTime, while traces, sessions, and scores
+        // filter on timestamp via fromTimestamp/toTimestamp.
+        let (time_col, from_param, to_param) = if self.endpoint.ends_with("observations") {
+            ("start_time", "fromStartTime", "toStartTime")
+        } else {
+            ("timestamp", "fromTimestamp", "toTimestamp")
+        };
+
         let mut qs = String::new();
         for qual in ctx.get_quals().iter() {
-            if qual.operator() != "=" || qual.use_or() {
+            if qual.use_or() {
                 continue;
             }
             let field = qual.field();
-            if !PUSHABLE.contains(&field.as_str()) {
+            let operator = qual.operator();
+
+            // parameterised quals resolve too late to help us here
+            let Value::Cell(cell) = qual.value() else {
+                continue;
+            };
+
+            if field == time_col {
+                let micros = match cell {
+                    Cell::Timestamp(v) | Cell::Timestamptz(v) => v,
+                    _ => continue,
+                };
+                // Both API bounds are inclusive-from / exclusive-to, so only the
+                // operators that match those semantics are pushed. `>` and `<=` would
+                // need an epsilon shift; Postgres filters those locally instead.
+                let param = match operator.as_str() {
+                    ">=" => from_param,
+                    "<" => to_param,
+                    _ => continue,
+                };
+                // Cell::Timestamp is microseconds since the epoch, and despite its name
+                // epoch_ms_to_rfc3339 takes microseconds too (the host calls
+                // from_timestamp_micros), so this passes straight through.
+                let Ok(iso) = time::epoch_ms_to_rfc3339(micros) else {
+                    continue;
+                };
+                qs.push_str(&format!("&{}={}", param, url_encode(&iso)));
                 continue;
             }
-            // parameterised quals resolve too late to help us here
-            let Value::Cell(Cell::String(v)) = qual.value() else {
+
+            if operator != "=" || !PUSHABLE.contains(&field.as_str()) {
+                continue;
+            }
+            let Cell::String(v) = cell else {
                 continue;
             };
             qs.push_str(&format!("&{}={}", to_camel_case(&field), url_encode(&v)));
@@ -96,6 +137,13 @@ impl LangfuseFdw {
             url.push_str(&format!("&cursor={}", url_encode(cursor)));
         } else if self.next_page > 1 {
             url.push_str(&format!("&page={}", self.next_page));
+        }
+
+        // Set `verbose 'true'` on the server to see which filters actually reached the
+        // API — the difference between a pushdown working and Postgres quietly filtering
+        // a full scan is otherwise invisible.
+        if self.verbose {
+            utils::report_info(&format!("langfuse_fdw: GET {}", url));
         }
 
         let headers: Vec<(String, String)> = vec![
@@ -253,6 +301,7 @@ impl Guest for LangfuseFdw {
             .require_or("page_size", "100".to_owned().as_str())
             .parse::<i64>()
             .map_err(|e| format!("invalid page_size: {}", e))?;
+        this.verbose = opts.require_or("verbose", "false") == "true";
 
         // Keys live in Vault so they never appear in `create server` DDL or pg_dump
         // output. Plaintext options stay available for local development.
@@ -278,7 +327,8 @@ impl Guest for LangfuseFdw {
 
         let opts = ctx.get_options(OptionsType::Table);
         this.endpoint = opts.require("object")?;
-        this.filter_qs = Self::pushdown_quals(ctx);
+        // reads self.endpoint to pick the right time filter params, so it must run after
+        this.filter_qs = this.pushdown_quals(ctx);
 
         // The v2 endpoints return only the `core` and `basic` groups unless asked
         // otherwise, which would leave usage/cost columns silently NULL. Request the

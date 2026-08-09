@@ -79,6 +79,7 @@ create server langfuse_server
 | `secret_key_id` | one of | — | Vault secret UUID holding the secret key |
 | `secret_key` | one of | — | Plaintext key; for local development only |
 | `page_size` | no | `100` | Rows per upstream request, max 1000 |
+| `verbose` | no | `false` | Set to `'true'` to log each request URL as an `INFO` message |
 
 ## Foreign tables
 
@@ -193,8 +194,30 @@ Equality filters on `trace_id`, `user_id`, `session_id`, `type`, `level`, and `n
 pushed to the API as query parameters. `LIMIT` is pushed down too, so `limit 10` costs one
 request regardless of project size. Pages are fetched lazily as the scan consumes them.
 
-Everything else is filtered by Postgres after the fact. Notably `start_time > ...` is not
-yet pushed down — see below.
+Time bounds are pushed down as well, which is what makes time-windowed queries cheap:
+
+```sql
+-- reaches the API as ?fromTimestamp=2026-08-02T...&toTimestamp=2026-08-09T...
+select * from langfuse.traces
+where timestamp >= now() - interval '7 days'
+  and timestamp < now();
+```
+
+The column and the parameters differ per endpoint, and the wrapper picks the right pair:
+`observations` filters `start_time` via `fromStartTime`/`toStartTime`, everything else
+filters `timestamp` via `fromTimestamp`/`toTimestamp`.
+
+Only `>=` and `<` are pushed, matching the API's inclusive-from / exclusive-to semantics.
+`>` and `<=` would need an epsilon shift to stay correct, so those are left to Postgres —
+the query still works, it just fetches more pages. Everything else is filtered locally
+too; Postgres re-checks every pushed-down qual regardless, so a coarse pushdown is safe.
+
+To see what actually reached the API, set `verbose 'true'` on the server and read the
+`INFO` lines:
+
+```
+langfuse_fdw: GET https://jp.cloud.langfuse.com/api/public/traces?limit=100&fromTimestamp=...
+```
 
 ## Seeding test data
 
@@ -251,8 +274,9 @@ columns as `numeric` if you need exact decimal output.
 
 Not done yet:
 
-- **Timestamp pushdown.** `fromStartTime`/`toStartTime` would make time-windowed queries
-  much cheaper; currently a `where start_time > ...` scans all pages.
+- **`>` and `<=` time bounds.** Not pushed down, since the API's bounds are
+  inclusive-from / exclusive-to and shifting by an epsilon risks dropping rows. Use `>=`
+  and `<` to get the cheap path.
 - **`user_id` on observations.** Accepted as a filter, absent from the response. Join
   through `trace_id` to attribute a call to a user.
 - **Other endpoints.** `sessions` and `v3/scores` should work via `object` but are
