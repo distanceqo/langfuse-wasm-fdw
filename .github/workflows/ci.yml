@@ -10,9 +10,13 @@ permissions:
   contents: read
 
 env:
-  # Must match the version in release_wasm_fdw.yml: different cargo-component
-  # versions emit different bytes, so a checksum verified here would not match
-  # the one published by a release built with another version.
+  # Kept in sync with release_wasm_fdw.yml so CI exercises the same toolchain the
+  # release uses — building 0.2.0 with 0.21.1 instead produced different bytes.
+  #
+  # Note this does not make builds reproducible: the checksum below still drifts
+  # between runs as the stable toolchain and dependency patch versions move. The
+  # authoritative checksum is the one published with each release, computed from
+  # the exact artifact users download.
   CARGO_COMPONENT_VERSION: 0.13.2
 
 jobs:

@@ -1,5 +1,7 @@
 # Langfuse Wasm FDW
 
+[![CI](https://github.com/distanceqo/langfuse-wasm-fdw/actions/workflows/ci.yml/badge.svg)](https://github.com/distanceqo/langfuse-wasm-fdw/actions/workflows/ci.yml)
+
 A Postgres [Foreign Data Wrapper](https://fdw.dev) for [Langfuse](https://langfuse.com),
 built with the [Wrappers](https://github.com/supabase/wrappers) framework and compiled to
 WebAssembly.
@@ -271,6 +273,17 @@ Postgres.
 Pushing a `v*.*.*` tag triggers the release workflow, which builds the component,
 computes its checksum, and publishes both to a GitHub release along with ready-to-paste
 SQL.
+
+CI runs on every push and PR: it builds the component, checks `rustfmt` and `clippy`
+(against `wasm32-unknown-unknown`, the real target), and verifies that the version and
+package URL in `README.md` and `scripts/install.sql` still match `Cargo.toml` — a stale
+version there would hand users a checksum that cannot match.
+
+`cargo-component` is pinned to the same version in both workflows, since different
+versions emit different bytes. Note that builds are *not* reproducible even so: the
+checksum drifts as the stable toolchain moves, so the authoritative value is always the
+one published with the release. Bumping the pin means cutting a new release, not just
+editing the checksum.
 
 ## Status and limitations
 
