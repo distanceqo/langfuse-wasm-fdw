@@ -57,14 +57,7 @@ impl LangfuseFdw {
     // left for Postgres to re-check locally. Postgres re-checks all of them anyway, so a
     // pushdown that is merely coarse is still safe.
     fn pushdown_quals(&self, ctx: &Context) -> String {
-        const PUSHABLE: [&str; 6] = [
-            "trace_id",
-            "user_id",
-            "session_id",
-            "type",
-            "level",
-            "name",
-        ];
+        const PUSHABLE: [&str; 6] = ["trace_id", "user_id", "session_id", "type", "level", "name"];
 
         // The time column and its query params differ per endpoint: observations filter
         // on start_time via fromStartTime/toStartTime, while traces, sessions, and scores
@@ -160,8 +153,7 @@ impl LangfuseFdw {
         };
         let resp = http::get(&req)?;
         // surfaces 401/403 as a Postgres error rather than an empty result set
-        http::error_for_status(&resp)
-            .map_err(|err| format!("{}: {}", err, resp.body))?;
+        http::error_for_status(&resp).map_err(|err| format!("{}: {}", err, resp.body))?;
 
         let resp_json: JsonValue = serde_json::from_str(&resp.body).map_err(|e| e.to_string())?;
 
