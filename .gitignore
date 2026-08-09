@@ -13,3 +13,8 @@ target/
 cmake*/
 .direnv
 src/bindings.rs
+
+# local credentials, never commit
+.env
+.env.*
+!.env.example

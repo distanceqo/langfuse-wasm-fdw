@@ -19,8 +19,9 @@ jobs:
 
       - name: Set up Rust
         run: |
-          # install Rust
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path --profile minimal --default-toolchain 1.81.0 && \
+          # Stable, not a pinned version: cargo-component's dependency tree now needs
+          # edition2024, which 1.81.0 cannot parse.
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path --profile minimal && \
             rustup --version && \
             rustc --version && \
             cargo --version
@@ -28,11 +29,19 @@ jobs:
           # add wasm32-unknown-unknown target
           rustup target add wasm32-unknown-unknown
 
-          # install Wasm component
-          cargo install cargo-component --version 0.13.2
-
-          # install rustfmt for the toolchain
+          # wit-bindgen shells out to rustfmt when generating bindings
           rustup component add rustfmt
+
+          # install Wasm component
+          cargo install cargo-component --locked --version 0.13.2
+
+          # cargo-component 0.13.2 asks for wasm32-wasi, renamed to wasm32-wasip1 in
+          # newer toolchains. Install the real target and alias the old name.
+          rustup target add wasm32-wasip1
+          RUSTLIB="$(rustc --print sysroot)/lib/rustlib"
+          if [ -d "$RUSTLIB/wasm32-wasip1" ] && [ ! -e "$RUSTLIB/wasm32-wasi" ]; then
+            ln -s "$RUSTLIB/wasm32-wasip1" "$RUSTLIB/wasm32-wasi"
+          fi
 
           # show all installed packagies
           cargo install --list

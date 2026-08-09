@@ -15,8 +15,11 @@ create foreign data wrapper if not exists wasm_wrapper
 -- Storing them here keeps the keys out of `create server` DDL, out of pg_dump, and
 -- out of anything that reads pg_foreign_server.
 -- Note the returned UUIDs; they go into the server options below.
+-- Do not commit real keys here; this file is tracked. Paste them straight into the
+-- SQL Editor instead.
 select vault.create_secret('<pk-lf-...>', 'langfuse_public_key');
 select vault.create_secret('<sk-lf-...>', 'langfuse_secret_key');
+
 
 -- Look them up again later with:
 --   select id, name from vault.secrets where name like 'langfuse%';
