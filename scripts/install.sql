@@ -6,9 +6,16 @@
 
 create extension if not exists wrappers with schema extensions;
 
-create foreign data wrapper if not exists wasm_wrapper
-  handler wasm_fdw_handler
-  validator wasm_fdw_validator;
+-- CREATE FOREIGN DATA WRAPPER has no IF NOT EXISTS form, so guard it by hand —
+-- re-running the script should not fail on an already-installed wrapper.
+do $$
+begin
+  if not exists (select 1 from pg_foreign_data_wrapper where fdwname = 'wasm_wrapper') then
+    create foreign data wrapper wasm_wrapper
+      handler wasm_fdw_handler
+      validator wasm_fdw_validator;
+  end if;
+end $$;
 
 
 -- ── 1. Keys into Vault ───────────────────────────────────────────────
