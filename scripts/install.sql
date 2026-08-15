@@ -40,7 +40,7 @@ create server langfuse_server
     fdw_package_url 'https://github.com/distanceqo/langfuse-wasm-fdw/releases/download/v0.3.0/langfuse_fdw.wasm',
     fdw_package_name 'distanceqo:langfuse-fdw',
     fdw_package_version '0.3.0',
-    fdw_package_checksum '<sha256 from the release>',
+    fdw_package_checksum 'f2bd83cc4480e0ff667b2aecb9b8acbfdefa94cb37ca83ee6f02510bbbb93c35',
     -- jp / us / eu — must match the region the project was created in, keys are
     -- region-bound and will 401 elsewhere
     api_url 'https://jp.cloud.langfuse.com',
