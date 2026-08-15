@@ -17,10 +17,19 @@ select u.plan,
        sum(t.total_cost)   as cost_usd
 from public.users u
 join langfuse.traces t on t.user_id = u.id::text
-where t.timestamp >= now() - interval '30 days'
+where t.timestamp >= '2026-08-01'::timestamp
 group by u.plan
 order by cost_usd desc;
 ```
+
+> **Upstreamed.** This wrapper was contributed to Supabase and now ships in the official
+> Wrappers repository — see [supabase/wrappers#622](https://github.com/supabase/wrappers/pull/622)
+> (merged) and [`wasm-wrappers/fdw/langfuse_fdw`](https://github.com/supabase/wrappers/tree/main/wasm-wrappers/fdw/langfuse_fdw).
+>
+> Once Supabase cuts a `wasm_langfuse_fdw` release, prefer that build: it is the one their
+> docs and dashboard point at. This repository stays the standalone version — same
+> behaviour, published on its own schedule, plus the seed scripts, install SQL, and CI that
+> live outside the upstream tree.
 
 ## Why an FDW and not the ClickHouse wrapper
 
@@ -54,20 +63,20 @@ select vault.create_secret('pk-lf-...', 'langfuse_public_key');
 select vault.create_secret('sk-lf-...', 'langfuse_secret_key');
 ```
 
-Then create the server, passing the secret UUIDs returned above:
+Then create the server, referring to the secrets by the names used above:
 
 ```sql
 create server langfuse_server
   foreign data wrapper wasm_wrapper
   options (
-    fdw_package_url 'https://github.com/distanceqo/langfuse-wasm-fdw/releases/download/v0.2.0/langfuse_fdw.wasm',
+    fdw_package_url 'https://github.com/distanceqo/langfuse-wasm-fdw/releases/download/v0.3.0/langfuse_fdw.wasm',
     fdw_package_name 'distanceqo:langfuse-fdw',
-    fdw_package_version '0.2.0',
-    fdw_package_checksum 'dab63e365a684f4033322b66868b89ed3c21494973ff67836b223643bb9a7803',
+    fdw_package_version '0.3.0',
+    fdw_package_checksum '<sha256 from the release>',
     -- must match the region the project was created in; keys are region-bound
     api_url 'https://jp.cloud.langfuse.com',
-    public_key_id '<public key secret UUID>',
-    secret_key_id '<secret key secret UUID>'
+    public_key_name 'langfuse_public_key',
+    secret_key_name 'langfuse_secret_key'
   );
 ```
 
@@ -76,14 +85,30 @@ create server langfuse_server
 | Option | Required | Default | Notes |
 | --- | --- | --- | --- |
 | `api_url` | no | `https://cloud.langfuse.com` | `jp.` / `us.` prefix for those regions, or your self-hosted URL |
-| `public_key_id` | one of | — | Vault secret UUID holding the public key |
+| `public_key_name` | one of | — | Vault secret **name** holding the public key |
+| `public_key_id` | one of | — | Vault secret UUID, if you prefer ids |
 | `public_key` | one of | — | Plaintext key; for local development only |
-| `secret_key_id` | one of | — | Vault secret UUID holding the secret key |
+| `secret_key_name` | one of | — | Vault secret **name** holding the secret key |
+| `secret_key_id` | one of | — | Vault secret UUID, if you prefer ids |
 | `secret_key` | one of | — | Plaintext key; for local development only |
 | `page_size` | no | `100` | Rows per upstream request, max 1000 |
 | `verbose` | no | `false` | Set to `'true'` to log each request URL as an `INFO` message |
 
+Each credential resolves in that order — name, then id, then plaintext. The name form
+avoids having to look a UUID back up.
+
 ## Foreign tables
+
+The wrapper implements `import foreign schema`, so both tables can be created in one
+statement:
+
+```sql
+create schema if not exists langfuse;
+
+import foreign schema langfuse from server langfuse_server into langfuse;
+```
+
+Or declare them by hand, with only the columns you need:
 
 ```sql
 create schema langfuse;
@@ -287,8 +312,9 @@ editing the checksum.
 
 ## Status and limitations
 
-Working: cursor *and* page-number pagination, Vault-backed auth, LIMIT and equality
-pushdown, usage/cost flattening with fallbacks, field-group selection.
+Working: cursor *and* page-number pagination, Vault-backed auth by secret name or id,
+`import foreign schema`, LIMIT / equality / time-bound pushdown, usage/cost flattening
+with fallbacks, field-group selection.
 
 End-to-end verified on Supabase against a live Langfuse Cloud (JP) project: the component
 loads, authenticates out of Vault, and returns rows that aggregate correctly.

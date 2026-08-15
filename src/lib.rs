@@ -2,12 +2,15 @@
 mod bindings;
 use serde_json::Value as JsonValue;
 
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
+use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use bindings::{
     exports::supabase::wrappers::routines::Guest,
     supabase::wrappers::{
         http, time,
-        types::{Cell, Context, FdwError, FdwResult, OptionsType, Row, TypeOid, Value},
+        types::{
+            Cell, Context, FdwError, FdwResult, ImportForeignSchemaStmt, Options, OptionsType, Row,
+            TypeOid, Value,
+        },
         utils,
     },
 };
@@ -51,6 +54,20 @@ impl LangfuseFdw {
 
     fn this_mut() -> &'static mut Self {
         unsafe { &mut (*INSTANCE) }
+    }
+
+    // Resolves one credential from `<name>_name`, `<name>_id`, or `<name>` in that order.
+    // Vault is preferred; the plaintext form is a convenience for local development.
+    fn read_key(opts: &Options, name: &str) -> Result<String, FdwError> {
+        if let Some(secret_name) = opts.get(&format!("{name}_name")) {
+            return utils::get_vault_secret_by_name(&secret_name)
+                .ok_or(format!("secret '{secret_name}' not found in Vault"));
+        }
+        if let Some(secret_id) = opts.get(&format!("{name}_id")) {
+            return utils::get_vault_secret(&secret_id)
+                .ok_or(format!("secret id '{secret_id}' not found in Vault"));
+        }
+        opts.require(name)
     }
 
     // Only filters Langfuse accepts as query params are pushed down; everything else is
@@ -136,7 +153,7 @@ impl LangfuseFdw {
         // API — the difference between a pushdown working and Postgres quietly filtering
         // a full scan is otherwise invisible.
         if self.verbose {
-            utils::report_info(&format!("langfuse_fdw: GET {}", url));
+            utils::report_info(&format!("langfuse_fdw: GET {url}"));
         }
 
         let headers: Vec<(String, String)> = vec![
@@ -218,7 +235,7 @@ fn url_encode(s: &str) -> String {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
                 out.push(*b as char)
             }
-            _ => out.push_str(&format!("%{:02X}", b)),
+            _ => out.push_str(&format!("%{b:02X}")),
         }
     }
     out
@@ -284,7 +301,7 @@ impl Guest for LangfuseFdw {
         Self::init_instance();
         let this = Self::this_mut();
 
-        let opts = ctx.get_options(OptionsType::Server);
+        let opts = ctx.get_options(&OptionsType::Server);
         this.base_url = opts
             .require_or("api_url", "https://cloud.langfuse.com")
             .trim_end_matches('/')
@@ -292,23 +309,21 @@ impl Guest for LangfuseFdw {
         this.page_size = opts
             .require_or("page_size", "100".to_owned().as_str())
             .parse::<i64>()
-            .map_err(|e| format!("invalid page_size: {}", e))?;
+            .map_err(|e| format!("invalid page_size: {e}"))?;
+        if !(1..=1000).contains(&this.page_size) {
+            return Err("invalid page_size: must be between 1 and 1000".to_owned());
+        }
         this.verbose = opts.require_or("verbose", "false") == "true";
 
         // Keys live in Vault so they never appear in `create server` DDL or pg_dump
-        // output. Plaintext options stay available for local development.
-        let public_key = match opts.get("public_key_id") {
-            Some(id) => utils::get_vault_secret(&id).ok_or("public_key_id not found in Vault")?,
-            None => opts.require("public_key")?,
-        };
-        let secret_key = match opts.get("secret_key_id") {
-            Some(id) => utils::get_vault_secret(&id).ok_or("secret_key_id not found in Vault")?,
-            None => opts.require("secret_key")?,
-        };
+        // output. Accepts a secret name, a secret id, or a plaintext key — the name form
+        // saves having to look a UUID back up.
+        let public_key = Self::read_key(&opts, "public_key")?;
+        let secret_key = Self::read_key(&opts, "secret_key")?;
 
         this.auth_header = format!(
             "Basic {}",
-            BASE64.encode(format!("{}:{}", public_key, secret_key))
+            BASE64.encode(format!("{public_key}:{secret_key}"))
         );
 
         Ok(())
@@ -317,7 +332,7 @@ impl Guest for LangfuseFdw {
     fn begin_scan(ctx: &Context) -> FdwResult {
         let this = Self::this_mut();
 
-        let opts = ctx.get_options(OptionsType::Table);
+        let opts = ctx.get_options(&OptionsType::Table);
         this.endpoint = opts.require("object")?;
         // reads self.endpoint to pick the right time filter params, so it must run after
         this.filter_qs = this.pushdown_quals(ctx);
@@ -400,10 +415,7 @@ impl Guest for LangfuseFdw {
                     other => Some(Cell::Json(other.to_string())),
                 },
                 _ => {
-                    return Err(format!(
-                        "column {} data type is not supported",
-                        tgt_col_name
-                    ));
+                    return Err(format!("column {tgt_col_name} data type is not supported"));
                 }
             };
 
@@ -447,6 +459,75 @@ impl Guest for LangfuseFdw {
 
     fn end_modify(_ctx: &Context) -> FdwResult {
         Ok(())
+    }
+
+    fn import_foreign_schema(
+        _ctx: &Context,
+        stmt: ImportForeignSchemaStmt,
+    ) -> Result<Vec<String>, FdwError> {
+        Ok(vec![
+            // Traces carry user_id and an aggregate cost, so this is the table to join
+            // local user tables against.
+            format!(
+                r#"create foreign table if not exists traces (
+                    id text,
+                    name text,
+                    user_id text,
+                    session_id text,
+                    environment text,
+                    release text,
+                    version text,
+                    total_cost double precision,
+                    latency double precision,
+                    timestamp timestamp,
+                    created_at timestamp,
+                    updated_at timestamp,
+                    input text,
+                    output text,
+                    metadata jsonb,
+                    tags jsonb
+                )
+                server {} options (
+                    object 'traces',
+                    rowid_column 'id'
+                )"#,
+                stmt.server_name,
+            ),
+            // One row per model call, with token counts and per-call cost. No user_id in
+            // the response — that lives on the trace; join through trace_id.
+            format!(
+                r#"create foreign table if not exists observations (
+                    id text,
+                    trace_id text,
+                    type text,
+                    name text,
+                    level text,
+                    model text,
+                    input_tokens bigint,
+                    output_tokens bigint,
+                    total_tokens bigint,
+                    input_cost double precision,
+                    output_cost double precision,
+                    total_cost double precision,
+                    latency double precision,
+                    time_to_first_token double precision,
+                    start_time timestamp,
+                    end_time timestamp,
+                    completion_start_time timestamp,
+                    prompt_name text,
+                    prompt_version bigint,
+                    input text,
+                    output text,
+                    metadata jsonb,
+                    model_parameters jsonb
+                )
+                server {} options (
+                    object 'observations',
+                    rowid_column 'id'
+                )"#,
+                stmt.server_name,
+            ),
+        ])
     }
 }
 

@@ -21,35 +21,42 @@ end $$;
 -- ── 1. Keys into Vault ───────────────────────────────────────────────
 -- Storing them here keeps the keys out of `create server` DDL, out of pg_dump, and
 -- out of anything that reads pg_foreign_server.
--- Note the returned UUIDs; they go into the server options below.
+-- The second argument is the secret name, which is what the server options below refer
+-- to — no need to keep track of the returned UUIDs.
 -- Do not commit real keys here; this file is tracked. Paste them straight into the
 -- SQL Editor instead.
 select vault.create_secret('<pk-lf-...>', 'langfuse_public_key');
 select vault.create_secret('<sk-lf-...>', 'langfuse_secret_key');
 
 
--- Look them up again later with:
---   select id, name from vault.secrets where name like 'langfuse%';
+-- List them later with:
+--   select name from vault.secrets where name like 'langfuse%';
 
 
 -- ── 2. Server ────────────────────────────────────────────────────────
 create server langfuse_server
   foreign data wrapper wasm_wrapper
   options (
-    fdw_package_url 'https://github.com/distanceqo/langfuse-wasm-fdw/releases/download/v0.2.0/langfuse_fdw.wasm',
+    fdw_package_url 'https://github.com/distanceqo/langfuse-wasm-fdw/releases/download/v0.3.0/langfuse_fdw.wasm',
     fdw_package_name 'distanceqo:langfuse-fdw',
-    fdw_package_version '0.2.0',
-    fdw_package_checksum 'dab63e365a684f4033322b66868b89ed3c21494973ff67836b223643bb9a7803',
+    fdw_package_version '0.3.0',
+    fdw_package_checksum '<sha256 from the release>',
     -- jp / us / eu — must match the region the project was created in, keys are
     -- region-bound and will 401 elsewhere
     api_url 'https://jp.cloud.langfuse.com',
-    public_key_id '<public key secret UUID>',
-    secret_key_id '<secret key secret UUID>'
+    public_key_name 'langfuse_public_key',
+    secret_key_name 'langfuse_secret_key'
   );
 
 
 -- ── 3. Foreign tables ────────────────────────────────────────────────
 create schema if not exists langfuse;
+
+-- Shortcut: the wrapper implements import foreign schema, so this one statement creates
+-- both tables with every mapped column. Run it instead of the two blocks below, or use
+-- those if you want to declare a narrower set of columns.
+--
+--   import foreign schema langfuse from server langfuse_server into langfuse;
 
 -- Traces carry user_id and aggregate cost, so this is the table to join against.
 create foreign table langfuse.traces (

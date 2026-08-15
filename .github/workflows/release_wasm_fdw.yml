@@ -32,16 +32,8 @@ jobs:
           # wit-bindgen shells out to rustfmt when generating bindings
           rustup component add rustfmt
 
-          # install Wasm component
-          cargo install cargo-component --locked --version 0.13.2
-
-          # cargo-component 0.13.2 asks for wasm32-wasi, renamed to wasm32-wasip1 in
-          # newer toolchains. Install the real target and alias the old name.
-          rustup target add wasm32-wasip1
-          RUSTLIB="$(rustc --print sysroot)/lib/rustlib"
-          if [ -d "$RUSTLIB/wasm32-wasip1" ] && [ ! -e "$RUSTLIB/wasm32-wasi" ]; then
-            ln -s "$RUSTLIB/wasm32-wasip1" "$RUSTLIB/wasm32-wasi"
-          fi
+          # install Wasm component — must match CARGO_COMPONENT_VERSION in ci.yml
+          cargo install cargo-component --locked --version 0.21.1
 
           # show all installed packagies
           cargo install --list
@@ -105,38 +97,16 @@ jobs:
               fdw_package_name '${PACKAGE}',
               fdw_package_version '${VERSION}',
               fdw_package_checksum '${CHECKSUM}',
+              -- jp / us / eu; must match the region the project was created in
               api_url 'https://cloud.langfuse.com',
-              public_key_id '<the public_key secret UUID>',
-              secret_key_id '<the secret_key secret UUID>'
+              public_key_name 'langfuse_public_key',
+              secret_key_name 'langfuse_secret_key'
             );
 
           create schema langfuse;
 
-          create foreign table langfuse.observations (
-            id text,
-            trace_id text,
-            type text,
-            name text,
-            level text,
-            user_id text,
-            session_id text,
-            provided_model_name text,
-            input_tokens bigint,
-            output_tokens bigint,
-            total_tokens bigint,
-            total_cost double precision,
-            latency double precision,
-            start_time timestamp,
-            end_time timestamp,
-            input text,
-            output text,
-            metadata jsonb
-          )
-            server langfuse_server
-            options (
-              object 'v2/observations',
-              rowid_column 'id'
-            );
+          -- creates both the traces and observations foreign tables
+          import foreign schema langfuse from server langfuse_server into langfuse;
 
           For more details, please visit https://fdw.dev.
           EOF
