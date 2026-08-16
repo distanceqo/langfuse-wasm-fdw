@@ -19,15 +19,32 @@ Langfuse Cloud project and are reproducible; the seed script is in the repo.
 Langfuse lets you attach arbitrary `metadata` to a trace. That is the right design — every
 product has different dimensions, and no vendor can enumerate them in advance.
 
-But it means the UI can only offer breakdowns over dimensions it knows about. Grouping by
-`metadata->>'organizationId'` is not something a fixed set of dropdowns can express. This is
-a real gap that users have asked about, not a hypothetical one:
+It is tempting to read the rest as a UI gap: the dashboard just needs another dropdown. It
+isn't. **There is no metadata dimension at any layer of the platform.** Checked against Langfuse
+Cloud on 2026-08-16:
 
-- [langfuse#12614 — *Allow using `metadata` fields (e.g. `organizationId`) as Breakdown*](https://github.com/langfuse/langfuse/issues/12614)
+| Layer | Aggregates server-side? | Can group by `metadata`? |
+| --- | --- | --- |
+| Dashboard widgets | yes | no |
+| `GET /api/public/metrics` (v1, deprecated) | yes | **no** — dimensions are a fixed list of 9 |
+| `GET /api/public/v2/metrics` | yes | **no** — a fixed list of 29, and no `traces` view at all |
+| `GET /api/public/traces` | no | n/a — returns whole trace objects |
+
+Asking either metrics endpoint for a metadata dimension is rejected outright:
+
+```
+Invalid dimension metadata. Must be one of
+id, name, tags, userId, sessionId, release, version, environment, timestampMonth
+```
+
+So this is a design constraint, not a missing widget — which changes what a workaround means.
+Users have been asking for a while:
+
+- [langfuse#12614 — *Allow using `metadata` fields (e.g. `organizationId`) as Breakdown Dimension*](https://github.com/langfuse/langfuse/issues/12614)
 - [langfuse#6091 — *feat: filtering sessions with metadata*](https://github.com/langfuse/langfuse/issues/6091)
 
-Both are open. The underlying tension isn't a missing feature so much as a mismatch: free-form
-metadata is a *query* problem, and the natural language for query problems is SQL.
+Both open. The underlying mismatch: free-form metadata is a *query* problem, and the natural
+language for query problems is SQL. Which is available, if the traces are in a database.
 
 ## Setup
 
@@ -183,17 +200,18 @@ built from a `fields` server option, which for the `traces` endpoint defaults to
 `fields` parameter at all — so the API returns full trace objects, `input` and `output` payloads
 included, and the wrapper discards whatever Postgres didn't ask for.
 
-So this query does two wasteful things, and they are worth separating:
+So this query does two wasteful things:
 
-1. It pulls prompt and completion text over the wire in order to sum a float, because the
-   column list never reaches the API request.
+1. It pulls prompt and completion text over the wire in order to sum a float.
 2. It fetches **one row per trace**, paginated, to produce five numbers.
 
-The first is a small fix inside this wrapper: map the requested columns onto the `fields`
-groups that back them, and a cost aggregate stops asking for `io`. The second needs the
-framework, and is the subject of the next section.
+The first looks like it should be a cheap local fix — take the column list the framework already
+provides and derive a narrower request from it. It isn't available: the `traces` endpoint ignores
+the `fields` parameter entirely. Sending `fields=core` and sending nothing return the same 23
+keys, `input` and `output` included. Field-group selection exists only on the `v2/` endpoints, and
+there is no `v2/traces`.
 
-At 38 traces neither is visible. At 38,000 both are.
+At 38 traces neither cost is visible. At 38,000 both are.
 
 Two practical consequences:
 
@@ -240,21 +258,33 @@ A Wasm wrapper is told which *columns* are needed, but never that the caller is 
 aggregate — so it cannot make the one decision that would matter, which is to ask the remote
 for a total instead of for rows.
 
-Whether that turns into a remote aggregate depends on the upstream API. A source with a metrics
-endpoint is a straight win. A source without one still benefits: the wrapper could stop
-paginating through rows it is only going to add up. Either way it currently has no way to know
-the difference.
+Wiring that through would pay off, because Langfuse does aggregate server-side. This works:
 
-So there are two pieces of work here, and only one of them is hard:
+```
+GET /api/public/metrics?query={"view":"traces",
+  "dimensions":[{"field":"name"}],
+  "metrics":[{"measure":"totalCost","aggregation":"sum"}], ...}
 
-- **Narrow the request to the columns actually needed.** Local to this wrapper, no framework
-  changes: take the column list the framework already provides and derive the `fields` groups
-  from it. A cost aggregate stops fetching prompt text.
-- **Give Wasm wrappers an aggregate channel.** Extend the guest interface so the grouping keys
-  and aggregate functions that `GetForeignUpperPaths` already collects can reach a Wasm guest,
-  the way they now reach the native MySQL wrapper.
+{"data":[{"name":"summarize-doc","sum_totalCost":0.490354}, ...]}
+```
 
-The first is worth doing regardless of the second, and is measurable in bytes.
+One request, aggregated remotely, instead of paginating every row. A wrapper that knew it was
+serving `select name, sum(total_cost) ... group by name` could route to that endpoint.
+
+And here is the part I did not expect. **The aggregate you most want to push down is the one
+that can never be pushed down.** `group by user_id` maps onto a supported dimension and would
+become a single cheap request. `group by metadata->>'organizationId'` cannot, at any volume,
+ever — because the remote has no metadata dimension to group by, as the table at the top of
+this post shows.
+
+So for the query this whole post is about, fetching rows and aggregating in Postgres is not a
+fallback until something better arrives. It is the only architecture that answers the question
+at all, and materializing is how you make it scale. That is a more interesting reason to put
+traces in a database than "SQL is nicer than a dropdown."
+
+Aggregate pushdown for Wasm wrappers is still worth building — for `user_id`, `name`, `tags`,
+`environment` and the rest of the supported list it turns N requests into one. It just isn't
+what fixes per-tenant cost.
 
 ---
 
