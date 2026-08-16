@@ -22,6 +22,10 @@ group by u.plan
 order by cost_usd desc;
 ```
 
+For a full walkthrough of attributing cost to your own dimensions — including what pushes down,
+what doesn't, and how to read `explain (verbose)` to tell the difference — see
+[**docs/per-tenant-cost.md**](./docs/per-tenant-cost.md).
+
 > **Upstreamed.** This wrapper was contributed to Supabase and now ships in the official
 > Wrappers repository — see [supabase/wrappers#622](https://github.com/supabase/wrappers/pull/622)
 > (merged) and [`wasm-wrappers/fdw/langfuse_fdw`](https://github.com/supabase/wrappers/tree/main/wasm-wrappers/fdw/langfuse_fdw).
